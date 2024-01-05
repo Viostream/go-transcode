@@ -6,9 +6,11 @@ import (
 )
 
 type Config struct {
-	MediaPath     string // Transcoded video input.
-	TranscodeDir  string // Temporary directory to store transcoded elements.
-	SegmentPrefix string
+	MediaPath            string // Transcoded video input.
+	TranscodeDir         string // Temporary directory to store transcoded elements.
+	TranscodeToInputPath bool   // Stores the transcodes alongside the raw input
+	PersistTranscodes    bool   // Stores the transcodes in a permanent directory
+	SegmentPrefix        string
 
 	VideoProfile   *VideoProfile
 	VideoKeyframes bool

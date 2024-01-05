@@ -278,6 +278,36 @@ func (m *ManagerCtx) initialize() {
 		Msg("initialization completed")
 }
 
+func (m *ManagerCtx) loadPreexistingSegments() {
+	m.logger.Info().Msg("loading pre-existing segments")
+
+	segments, err := os.ReadDir(m.config.TranscodeDir)
+	if err != nil && !os.IsNotExist(err) {
+		m.logger.Warn().
+			Str("transcodeDir", m.config.TranscodeDir).
+			Msg("could not read directory")
+		return
+	}
+
+	for _, s := range segments {
+		// Check if this is actually a ts chunk
+		if s.Name()[len(s.Name())-3:] != ".ts" {
+			m.logger.Warn().Str("segment", s.Name()).Msg("not an actual segment")
+			continue
+		}
+
+		// Get the index
+		i, err := strconv.Atoi(strings.Split(strings.Split(s.Name(), "-")[1], ".")[0])
+		if err != nil {
+			m.logger.Warn().Str("segment", s.Name()).Msg("not an actual segment")
+			continue
+		}
+
+		m.logger.Debug().Str("segment", s.Name()).Msg("-loaded")
+		m.segments[i] = s.Name()
+	}
+}
+
 //
 // segments
 //
@@ -295,6 +325,13 @@ func (m *ManagerCtx) getSegment(index int) (segmentPath string, ok bool) {
 	m.segmentsMu.RLock()
 	segmentName, ok = m.segments[index]
 	m.segmentsMu.RUnlock()
+
+	m.logger.Debug().
+		Int("index", index).
+		Str("segmentName", segmentName).
+		Str("transcodeDir", m.config.TranscodeDir).
+		Bool("ok", ok).
+		Msg("getSegment")
 
 	if !ok {
 		return
@@ -380,7 +417,11 @@ func (m *ManagerCtx) transcodeSegments(offset, limit int) error {
 	logger := m.logger.With().Int("offset", offset).Int("limit", limit).Logger()
 
 	segmentTimes := m.breakpoints[offset : offset+limit+1]
-	logger.Info().Interface("segments-times", segmentTimes).Msg("transcoding segments")
+	logger.Info().
+		Str("outputDirPath", m.config.TranscodeDir).
+		Str("segmentPrefix", m.config.SegmentPrefix).
+		Interface("segments-times", segmentTimes).
+		Msg("transcoding segments")
 
 	segments, err := TranscodeSegments(m.ctx, m.config.FFmpegBinary, TranscodeConfig{
 		InputFilePath: m.config.MediaPath,
@@ -515,6 +556,11 @@ func (m *ManagerCtx) Start() (err error) {
 		// initialization based on metadata
 		m.initialize()
 
+		// load pre-existing segments
+		if m.config.PersistTranscodes {
+			m.loadPreexistingSegments()
+		}
+
 		// set ready state as done
 		m.readyDone()
 	}()
@@ -530,7 +576,10 @@ func (m *ManagerCtx) Stop() {
 	m.cancel()
 
 	// remove all transcoded segments
-	m.clearAllSegments()
+	if !m.config.PersistTranscodes {
+		m.logger.Debug().Msg("clearing transcodes")
+		m.clearAllSegments()
+	}
 }
 
 func (m *ManagerCtx) Preload(ctx context.Context) (*ProbeMediaData, error) {
@@ -573,6 +622,20 @@ func (m *ManagerCtx) ServeMedia(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "404 index not found", http.StatusNotFound)
 		return
 	}
+
+	m.logger.Debug().
+		Str("segmentPath", segmentPath).
+		Str("reqSegName", reqSegName).
+		Int("index", index).
+		Msg("serveMedia")
+
+	// If running in persistent mode, check if we already have the segment before transcoding
+	// if m.config.PersistTranscodes {
+	// 	if _, err := os.Stat(segmentPath); os.IsNotExist(err) {
+	// 		serveExistingSegment(w, r, segmentPath)
+	// 		return
+	// 	}
+	// }
 
 	// try to transcode from current segment
 	if err := m.transcodeFromSegment(index); err != nil {
@@ -623,7 +686,12 @@ func (m *ManagerCtx) ServeMedia(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// return existing segment
+	serveExistingSegment(w, r, segmentPath)
+}
+
+func serveExistingSegment(w http.ResponseWriter, r *http.Request, segmentPath string) {
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	// @TODO configure cache control
 	w.Header().Set("Cache-Control", "no-cache")
 	http.ServeFile(w, r, segmentPath)
 }

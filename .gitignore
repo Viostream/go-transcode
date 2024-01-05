@@ -3,3 +3,5 @@
 /go-transcode
 /bin
 /.env
+
+vids/

@@ -107,6 +107,7 @@ func (a *ApiManagerCtx) HlsVod(r chi.Router) {
 			Str("path", urlPath).
 			Str("hlsResource", hlsResource).
 			Str("vodMediaPath", vodMediaPath).
+			Str("profileID", profileID).
 			Msg("new hls vod request")
 
 		// if manager was not found
@@ -117,19 +118,46 @@ func (a *ApiManagerCtx) HlsVod(r chi.Router) {
 				return
 			}
 
-			// create own transcoding directory
-			transcodeDir, err := os.MkdirTemp(a.config.Vod.TranscodeDir, fmt.Sprintf("vod-%s-*", profileID))
-			if err != nil {
-				logger.Warn().Err(err).Msg("could not create temp dir")
-				http.Error(w, "500 could not create temp dir", http.StatusInternalServerError)
-				return
+			// Check if we want to store transcodes alongside the original media
+			var transcodeSubDir string
+			if a.config.Vod.TranscodeToInputPath {
+				transcodeSubDir = filepath.Dir(vodMediaPath)
+			} else {
+				transcodeSubDir = a.config.Vod.TranscodeDir
+			}
+
+			logger.Info().
+				Bool("persistTranscodes", a.config.Vod.PersistTranscodes).
+				Str("transcodeDir", transcodeSubDir).
+				Msg("creating manager")
+
+			var transcodeDir string
+			// create persistent directory if requested
+			if a.config.Vod.PersistTranscodes {
+				transcodeDir = filepath.Join(transcodeSubDir, fmt.Sprintf("vod-%s", profileID))
+				err := os.Mkdir(transcodeDir, 0750)
+				if err != nil && !os.IsExist(err) {
+					logger.Warn().Err(err).Msg("could not create dir")
+					http.Error(w, "500 could not create dir", http.StatusInternalServerError)
+					return
+				}
+			} else {
+				// create temp transcoding directory
+				var err error
+				transcodeDir, err = os.MkdirTemp(transcodeSubDir, fmt.Sprintf("vod-%s-*", profileID))
+				if err != nil {
+					logger.Warn().Err(err).Msg("could not create temp dir")
+					http.Error(w, "500 could not create temp dir", http.StatusInternalServerError)
+					return
+				}
 			}
 
 			// create new manager
 			manager = hlsvod.New(hlsvod.Config{
-				MediaPath:     vodMediaPath,
-				TranscodeDir:  transcodeDir,
-				SegmentPrefix: profileID,
+				MediaPath:         vodMediaPath,
+				TranscodeDir:      transcodeDir,
+				PersistTranscodes: a.config.Vod.PersistTranscodes,
+				SegmentPrefix:     profileID,
 
 				VideoProfile: &hlsvod.VideoProfile{
 					Width:   profile.Width,
